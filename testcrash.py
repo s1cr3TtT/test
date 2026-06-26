@@ -560,10 +560,7 @@ if __name__ == "__main__":
         is_admin = 0
 
     if not is_admin:
-        print("╔══════════════════════════════════════╗")
-        print("║  Нужны права администратора!         ║")
-        print("║  Правый клик → запуск от имени admin ║")
-        print("╚══════════════════════════════════════╝")
+        print("admin need")
         sys.exit(1)
 
     print("[*] Theatrical Crash v4.0 — BRUTAL BSOD")
